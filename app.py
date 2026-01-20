@@ -22,6 +22,17 @@ def image_to_base64(image):
     return f"data:image/jpeg;base64,{img_str}"
 
 def get_ip_location():
+    """Fetch location from multiple IP APIs for better reliability."""
+    # 1. Try IP-API (Often more accurate for free tier)
+    try:
+        response = requests.get("http://ip-api.com/json/", timeout=3)
+        data = response.json()
+        if data.get('status') == 'success':
+            return float(data['lat']), float(data['lon'])
+    except Exception:
+        pass
+    
+    # 2. Fallback to IPInfo
     try:
         response = requests.get("https://ipinfo.io/json", timeout=3)
         data = response.json()
@@ -29,7 +40,8 @@ def get_ip_location():
             lat, lon = data['loc'].split(',')
             return float(lat), float(lon)
     except Exception:
-        return None, None
+        pass
+        
     return None, None
 
 # --- Session State ---
@@ -84,6 +96,21 @@ with st.container():
 
     # 2. Try Fetching if needed
     if loc_trigger and current_lat is None:
+        # Show the "Internal" button immediately to allow instant override
+        col_wait, col_btn = st.columns([2, 1])
+        with col_wait:
+            st.info("📡 Fetching GPS... (Waiting for device)")
+        with col_btn:
+             if st.button("Use Network Location (Fast)", key="btn_fast_mode"):
+                 with st.spinner("Fetching Network Location..."):
+                    lat, lon = get_ip_location()
+                    if lat:
+                        st.session_state.loc_lat = lat
+                        st.session_state.loc_lon = lon
+                        st.rerun()
+                    else:
+                        st.error("❌ Network Failed.")
+
         try:
             # Try Browser First
             loc_data = get_geolocation()
@@ -97,34 +124,18 @@ with st.container():
                 
                 # Failure Logic -> Fallback
                 elif 'error' in loc_data:
-                    with st.spinner("Switching to Network Location..."):
+                    # Fallback instantly
+                    with st.spinner("GPS Failed. Switching to Network..."):
                         lat, lon = get_ip_location()
                         if lat:
-                            st.session_state.loc_lat = lat
-                            st.session_state.loc_lon = lon
-                            st.rerun()
+                             st.session_state.loc_lat = lat
+                             st.session_state.loc_lon = lon
+                             st.rerun()
                         else:
-                            st.error("❌ Network Location Failed.")
+                             st.error("❌ Network Location Failed.")
             
-            else:
-                st.info("📡 Fetching GPS... (This depends on your device)")
-                # Escape hatch for slow devices
-                if st.button("Taking too long? Use Network Location"):
-                     with st.spinner("Fetching Network Location..."):
-                        lat, lon = get_ip_location()
-                        if lat:
-                            st.session_state.loc_lat = lat
-                            st.session_state.loc_lon = lon
-                            st.rerun()
-                        else:
-                            st.error("❌ Network Location Failed.")
-        except Exception as e:
-            # Fallback on Crash
-            lat, lon = get_ip_location()
-            if lat:
-                st.session_state.loc_lat = lat
-                st.session_state.loc_lon = lon
-                st.rerun()
+        except Exception:
+             pass
 
     # 3. Display Result (If Found)
     if st.session_state.loc_lat:
