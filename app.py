@@ -8,7 +8,7 @@ from pathlib import Path
 from PIL import Image
 from streamlit_js_eval import get_geolocation
 import requests
-from database import init_db, save_visit
+from database import init_db, save_visit, get_all_store_names, get_last_visit_by_store
 
 # --- Initialization ---
 # Create tables if they don't exist
@@ -48,6 +48,40 @@ def get_ip_location():
 if 'loc_lat' not in st.session_state: st.session_state.loc_lat = None
 if 'loc_lon' not in st.session_state: st.session_state.loc_lon = None
 
+# --- Pre-fill Callback ---
+def load_store_data():
+    """Callback to load data when a store is selected."""
+    selected = st.session_state.get("search_store")
+    if selected and selected != "Create New / Search...":
+        visit = get_last_visit_by_store(selected)
+        if visit:
+            st.session_state.store_name = visit.store_name
+            st.session_state.sr_name = visit.sr_name
+            st.session_state.phone = visit.phone_number
+            st.session_state.visit_type = "RE VISIT" # Default to Re-visit
+            st.session_state.category = visit.store_category
+            st.session_state.lead_type = visit.lead_type
+            
+            # Map products string back to booleans
+            prods = visit.products # "CIGARETTE, HOOKAH"
+            st.session_state.p1 = "CIGARETTE" in prods
+            st.session_state.p2 = "ROLLING PAPERS" in prods
+            st.session_state.p3 = "CIGARS" in prods
+            st.session_state.p4 = "HOOKAH" in prods
+            st.session_state.p5 = "ZIPPO LIGHTERS" in prods
+            st.session_state.p6 = "NONE" in prods
+    elif selected == "Create New / Search...":
+        # Clear fields for new entry
+        st.session_state.store_name = ""
+        st.session_state.phone = ""
+        st.session_state.p1 = False
+        st.session_state.p2 = False
+        st.session_state.p3 = False
+        st.session_state.p4 = False
+        st.session_state.p5 = False
+        st.session_state.p6 = False
+
+
 # --- UI ---
 st.set_page_config(page_title="Daily Store Reports", page_icon="📝", layout="centered")
 st.title("DAILY REPORT")
@@ -55,8 +89,21 @@ st.subheader("DAILY STORE VISIT REPORTS")
 
 # --- Main Form Container ---
 with st.container():
+    # Fetch existing stores for the dropdown
+    existing_stores = get_all_store_names()
+    
+    # Search Box with Callback
+    st.selectbox(
+        "🔎 SEARCH EXISTING STORE (Auto-fill)", 
+        ["Create New / Search..."] + existing_stores, 
+        key="search_store",
+        on_change=load_store_data
+    )
+
     sr_name = st.selectbox("SR NAME *", ["SHUBRAM KAR", "RAJU DAS"], key="sr_name")
     store_name_person = st.text_input("STORE NAME AND CONTACT PERSON *", key="store_name")
+    
+    # ... rest of fields
     visit_type = st.radio("STORE VISIT TYPE *", ["NEW VISIT", "RE VISIT"], horizontal=True, key="visit_type")
     store_category = st.radio("STORE CATEGORY *", ["MT", "HoReCa"], horizontal=True, key="category")
     phone = st.text_input("PHONE NUMBER *", key="phone")
