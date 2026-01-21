@@ -6,9 +6,15 @@ from io import BytesIO
 import os
 from pathlib import Path
 from PIL import Image
-from streamlit_js_eval import get_geolocation
-import requests
-from database import init_db, save_visit, get_all_store_names, get_last_visit_by_store
+# Removing streamlit-js-eval as we'll use a custom high-accuracy component
+import streamlit.components.v1 as components
+from streamlit_js_eval import streamlit_js_eval # Re-adding for its robust JS execution
+from database import init_db, save_visit, get_all_store_names, get_last_visit_by_store, update_lead_status
+from login_manager import require_auth, logout
+
+# --- Authentication ---
+require_auth()
+user = st.session_state.user
 
 # --- Initialization ---
 # Create tables if they don't exist
@@ -52,24 +58,43 @@ if 'loc_lon' not in st.session_state: st.session_state.loc_lon = None
 def load_store_data():
     """Callback to load data when a store is selected."""
     selected = st.session_state.get("search_store")
+    
+    # If user just typed something in store_name and clicked RE VISIT, we also want to trigger this.
+    # But usually, this callback is for the selectbox.
+    
     if selected and selected != "Create New / Search...":
         visit = get_last_visit_by_store(selected)
         if visit:
             st.session_state.store_name = visit.store_name
             st.session_state.sr_name = visit.sr_name
             st.session_state.phone = visit.phone_number
-            st.session_state.visit_type = "RE VISIT" # Default to Re-visit
-            st.session_state.category = visit.store_category
+            st.session_state.visit_type = "RE VISIT"
+            
+            # Map category to match widget options
+            cat_val = visit.store_category
+            if cat_val and cat_val.upper() == "HORECA":
+                st.session_state.category = "HoReCa"
+            elif cat_val and cat_val.upper() == "MT":
+                st.session_state.category = "MT"
+            else:
+                st.session_state.category = "MT"
+            
             st.session_state.lead_type = visit.lead_type
             
             # Map products string back to booleans
-            prods = visit.products # "CIGARETTE, HOOKAH"
+            prods = visit.products if visit.products else ""
             st.session_state.p1 = "CIGARETTE" in prods
             st.session_state.p2 = "ROLLING PAPERS" in prods
             st.session_state.p3 = "CIGARS" in prods
             st.session_state.p4 = "HOOKAH" in prods
             st.session_state.p5 = "ZIPPO LIGHTERS" in prods
             st.session_state.p6 = "NONE" in prods
+            
+            # CLEAR visit-specific details for Re-visit
+            st.session_state.order_details = ""
+            st.session_state.follow_up_date = datetime.now().date()
+            # Photo and Location are managed separately by their widgets
+            
     elif selected == "Create New / Search...":
         # Clear fields for new entry
         st.session_state.store_name = ""
@@ -80,12 +105,21 @@ def load_store_data():
         st.session_state.p4 = False
         st.session_state.p5 = False
         st.session_state.p6 = False
+        st.session_state.order_details = ""
+        st.session_state.follow_up_date = datetime.now().date()
 
 
 # --- UI ---
 st.set_page_config(page_title="Daily Store Reports", page_icon="📝", layout="centered")
+
+# Sidebar for User Info & Logout
+with st.sidebar:
+    st.write(f"👤 **Logged in as:** {user['full_name']}")
+    st.write(f"Role: {user['role']}")
+    if st.button("Logout"):
+        logout()
+
 st.title("DAILY REPORT")
-st.subheader("DAILY STORE VISIT REPORTS")
 
 # --- Main Form Container ---
 with st.container():
@@ -100,11 +134,49 @@ with st.container():
         on_change=load_store_data
     )
 
-    sr_name = st.selectbox("SR NAME *", ["SHUBRAM KAR", "RAJU DAS"], key="sr_name")
+    # sr_name = st.selectbox("SR NAME *", ["SHUBRAM KAR", "RAJU DAS"], key="sr_name")
+    # Defaulting to the logged in user's full name
+    sr_name = st.text_input("SR NAME *", value=user['full_name'], key="sr_name_input", disabled=True)
+    # Using the value for the database
+    sr_name_val = sr_name
     store_name_person = st.text_input("STORE NAME AND CONTACT PERSON *", key="store_name")
     
     # ... rest of fields
-    visit_type = st.radio("STORE VISIT TYPE *", ["NEW VISIT", "RE VISIT"], horizontal=True, key="visit_type")
+    # Logic for auto-populating when RE VISIT is clicked
+    def handle_visit_type_change():
+        if st.session_state.visit_type == "RE VISIT" and st.session_state.store_name:
+            # Check if this name exists in DB
+            visit = get_last_visit_by_store(st.session_state.store_name)
+            if visit:
+                st.session_state.sr_name = visit.sr_name
+                st.session_state.phone = visit.phone_number
+                
+                # Map category to match widget options
+                cat_val = visit.store_category
+                if cat_val and cat_val.upper() == "HORECA":
+                    st.session_state.category = "HoReCa"
+                elif cat_val and cat_val.upper() == "MT":
+                    st.session_state.category = "MT"
+                else:
+                    st.session_state.category = "MT"
+                    
+                st.session_state.lead_type = visit.lead_type
+                
+                prods = visit.products if visit.products else ""
+                st.session_state.p1 = "CIGARETTE" in prods
+                st.session_state.p2 = "ROLLING PAPERS" in prods
+                st.session_state.p3 = "CIGARS" in prods
+                st.session_state.p4 = "HOOKAH" in prods
+                st.session_state.p5 = "ZIPPO LIGHTERS" in prods
+                st.session_state.p6 = "NONE" in prods
+                
+                # Clear visit-specific details
+                st.session_state.order_details = ""
+                st.session_state.follow_up_date = datetime.now().date()
+            else:
+                st.warning("No previous data found for this store name.")
+
+    visit_type = st.radio("STORE VISIT TYPE *", ["NEW VISIT", "RE VISIT"], horizontal=True, key="visit_type", on_change=handle_visit_type_change)
     store_category = st.radio("STORE CATEGORY *", ["MT", "HoReCa"], horizontal=True, key="category")
     phone = st.text_input("PHONE NUMBER *", key="phone")
     lead_type = st.radio("LEAD TYPE *", ["HOT", "WARM", "COLD", "DEAD"], horizontal=True, key="lead_type")
@@ -129,69 +201,61 @@ with st.container():
     st.markdown("---")
     st.markdown("### 📍 LOCATION CAPTURE")
     
-    # --- Location Logic ---
-    loc_trigger = st.checkbox("Record Location (Click to Enable GPS)", key="loc_trigger")
+    # --- Simplified & Optimized Location Logic ---
+    col_loc1, col_loc2 = st.columns([1, 1])
     
-    # 1. Provide Reset Button always
-    if st.button("Reset Location"):
+    with col_loc1:
+        # Use a button to trigger the precision GPS capture
+        if st.button("🛰️ Capture Precision GPS", key="btn_gps", use_container_width=True):
+            # We use streamlit_js_eval to run a one-shot getCurrentPosition with high accuracy
+            # This is more direct than the manual component for a single fetch
+            js_code = """
+                new Promise((resolve, reject) => {
+                    navigator.geolocation.getCurrentPosition(
+                        (pos) => resolve({lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy}),
+                        (err) => resolve({error: err.message}),
+                        {enableHighAccuracy: true, timeout: 7000, maximumAge: 0}
+                    )
+                })
+            """
+            with st.spinner("Fetching Precise Location..."):
+                result = streamlit_js_eval(js_expressions=js_code, key="gps_eval")
+                if result:
+                    if "error" in result:
+                        st.error(f"❌ GPS Error: {result['error']}")
+                    else:
+                        st.session_state.loc_lat = result["lat"]
+                        st.session_state.loc_lon = result["lon"]
+                        st.session_state.loc_acc = result["acc"]
+                        st.rerun()
+
+    with col_loc2:
+        if st.button("🌐 Use Network Location", key="btn_net", use_container_width=True):
+            with st.spinner("Fetching Network Location..."):
+                lat, lon = get_ip_location()
+                if lat:
+                    st.session_state.loc_lat = lat
+                    st.session_state.loc_lon = lon
+                    st.session_state.loc_acc = 500 # Approx accuracy for IP
+                    st.rerun()
+                else:
+                    st.error("❌ Network Failed.")
+
+    if st.button("🔄 Reset Location", key="btn_reset"):
         st.session_state.loc_lat = None
         st.session_state.loc_lon = None
         st.rerun()
 
-    current_lat = st.session_state.loc_lat
-    current_lon = st.session_state.loc_lon
-
-    # 2. Try Fetching if needed
-    if loc_trigger and current_lat is None:
-        # Show the "Internal" button immediately to allow instant override
-        col_wait, col_btn = st.columns([2, 1])
-        with col_wait:
-            st.info("📡 Fetching GPS... (Waiting for device)")
-        with col_btn:
-             if st.button("Use Network Location (Fast)", key="btn_fast_mode"):
-                 with st.spinner("Fetching Network Location..."):
-                    lat, lon = get_ip_location()
-                    if lat:
-                        st.session_state.loc_lat = lat
-                        st.session_state.loc_lon = lon
-                        st.rerun()
-                    else:
-                        st.error("❌ Network Failed.")
-
-        try:
-            # Try Browser First
-            loc_data = get_geolocation()
-            
-            if loc_data:
-                # Success Logic
-                if 'coords' in loc_data:
-                    st.session_state.loc_lat = loc_data['coords']['latitude']
-                    st.session_state.loc_lon = loc_data['coords']['longitude']
-                    st.rerun()
-                
-                # Failure Logic -> Fallback
-                elif 'error' in loc_data:
-                    # Fallback instantly
-                    with st.spinner("GPS Failed. Switching to Network..."):
-                        lat, lon = get_ip_location()
-                        if lat:
-                             st.session_state.loc_lat = lat
-                             st.session_state.loc_lon = lon
-                             st.rerun()
-                        else:
-                             st.error("❌ Network Location Failed.")
-            
-        except Exception:
-             pass
-
-    # 3. Display Result (If Found)
+    # Display Result (If Found)
     if st.session_state.loc_lat:
         lat_disp = st.session_state.loc_lat
         lon_disp = st.session_state.loc_lon
+        acc_disp = st.session_state.get('loc_acc', 'Unknown')
         map_link = f"https://www.google.com/maps?q={lat_disp},{lon_disp}"
-        st.success("✅ Location Captured!")
-        st.write(f"**Coordinates:** {lat_disp}, {lon_disp}")
+        st.success(f"✅ Location Captured! (Accuracy: {acc_disp}m)")
         st.markdown(f"**Link:** [{map_link}]({map_link})")
+    else:
+        st.info("No location recorded yet. Click a button above to capture.")
     
     location_recorded_answer = st.radio("DID YOU RECORD THE LOCATION? *", ["YES", "NO"], horizontal=True, key="loc_recorded")
 
@@ -247,7 +311,8 @@ if submitted:
             visit_data = {
                 "date": current_date,
                 "time": current_time,
-                "sr_name": sr_name,
+                "sr_name": user['full_name'],
+                "username": user['username'],
                 "store_name": store_name_person,
                 "visit_type": visit_type,
                 "store_category": store_category,
